@@ -6,7 +6,7 @@ const mysql = require("mysql");
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors({origin: 'https://cloud-estate-api.onrender.com'}));
+app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
