@@ -6,7 +6,11 @@ const mysql = require("mysql");
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors({ origin: 'http://192.168.0.159:9000/' }));
+app.use(cors({
+  origin: '*', // ili '*' za sve domene
+  methods: 'GET,POST,PUT,DELETE,SELECT,INSERT',
+  credentials: true
+}));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
