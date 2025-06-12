@@ -2,32 +2,33 @@ const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const mysql = require("mysql");
-const multer = require("multer"); // Importirajte multer
-const path = require("path"); // Importirajte path modul
-const fs = require('fs'); // Importirajte fs modul za brisanje datoteka
+const multer = require("multer");
+const path = require("path");
+const fs = require('fs');
+const jwt = require('jsonwebtoken');
+
+// Load environment variables from .env file
+require('dotenv').config(); // Add this line at the very top
+
+// Import the auth middleware
+const auth = require('./middleware/auth'); // Add this line
 
 const app = express();
 
-// Omogućite CORS za sve domene
 app.use(cors({
   origin: '*',
   methods: 'GET,POST,PUT,DELETE',
   credentials: true
 }));
 
-// Parsiranje JSON i URL-kodiranih podataka (za obične POST zahtjeve bez datoteka)
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Postavite statični direktorij za slike.
-// Ovo pretpostavlja da će slike biti spremljene u 'uploads' folderu unutar vašeg Node.js projekta.
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Konfiguracija Multer za pohranu datoteka
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    let mainCategoryFolder = 'default'; // Ovo će biti 'kupnja' ili 'najam'
-    // Odredite glavni folder na temelju Tip_nekretnine
+    let mainCategoryFolder = 'default';
     const tipNekretnine = req.body.Tip_nekretnine;
 
     if (tipNekretnine === "Stan" || tipNekretnine === "Kuća") {
@@ -38,20 +39,17 @@ const storage = multer.diskStorage({
 
     const uploadPath = path.join(__dirname, 'uploads', mainCategoryFolder);
 
-    // Kreirajte direktorij ako ne postoji
     if (!fs.existsSync(uploadPath)) {
       fs.mkdirSync(uploadPath, { recursive: true });
     }
     cb(null, uploadPath);
   },
   filename: function (req, file, cb) {
-    // Koristi originalni naziv datoteke
     cb(null, file.originalname);
   }
 });
 const upload = multer({ storage: storage });
 
-// Konfiguracija MySQL Poola
 const pool = mysql.createPool({
   connectionLimit: 10,
   host: "student.veleri.hr",
@@ -60,7 +58,6 @@ const pool = mysql.createPool({
   database: "pmocibob",
 });
 
-// Pomoćna funkcija za izvršavanje SQL upita
 const executeQuery = (query, params = []) =>
   new Promise((resolve, reject) => {
     pool.query(query, params, (error, results) => {
@@ -71,7 +68,6 @@ const executeQuery = (query, params = []) =>
 
 // Rute
 
-// Dohvaćanje svih nekretnina (općenito)
 app.get("/api/nekretnine", async (req, res) => {
   try {
     const results = await executeQuery("SELECT * FROM Nekretnina");
@@ -81,7 +77,6 @@ app.get("/api/nekretnine", async (req, res) => {
   }
 });
 
-// Dohvaćanje nekretnina za kupnju
 app.get("/api/nekretnine/kupnja", async (req, res) => {
   try {
     const results = await executeQuery("SELECT * FROM Nekretnina_kupnja");
@@ -91,7 +86,6 @@ app.get("/api/nekretnine/kupnja", async (req, res) => {
   }
 });
 
-// Dohvaćanje nekretnina za najam
 app.get("/api/nekretnine/najam", async (req, res) => {
   try {
     const results = await executeQuery("SELECT * FROM Nekretnina_najam");
@@ -101,7 +95,6 @@ app.get("/api/nekretnine/najam", async (req, res) => {
   }
 });
 
-// Dohvaćanje nekretnine po ID-u
 app.get("/api/nekretnine/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -112,7 +105,6 @@ app.get("/api/nekretnine/:id", async (req, res) => {
   }
 });
 
-// Dodavanje opisa nekretnine (ova ruta se čini redundantnom ili je zastarjela, preporučam je ukloniti)
 app.post("/api/Opis_nekretnine", async (req, res) => {
   try {
     const { Cijena_nekretnine, Kvadratura_nekretnine } = req.body;
@@ -125,7 +117,6 @@ app.post("/api/Opis_nekretnine", async (req, res) => {
   }
 });
 
-// Dohvaćanje agencija
 app.get("/api/agencije", async (req, res) => {
   try {
     const query = "SELECT Naziv_Agencije, Adresa_Agencije, Telefon_Agencije, Email_Agencije FROM Agencija";
@@ -149,7 +140,14 @@ app.post("/api/login", async (req, res) => {
     const results = await executeQuery(query, [email, lozinka]);
 
     if (results.length > 0) {
-      res.status(200).send({ message: "Uspješan login!", korisnik: results[0] });
+      const korisnik = results[0];
+      // Generate JWT
+      const token = jwt.sign(
+        { sifraKorisnika: korisnik.Sifra_korisnika, email: korisnik.Email_korisnika },
+        process.env.JWT_SECRET_KEY, // Use the secret key from environment variables
+        { expiresIn: '1h' } // Token expires in 1 hour
+      );
+      res.status(200).send({ message: "Uspješan login!", korisnik: korisnik, token: token }); // Send token in response
     } else {
       res.status(401).send("Neispravan email ili lozinka.");
     }
@@ -175,7 +173,14 @@ app.post("/api/login_agencija", async (req, res) => {
     console.log("Rezultati upita:", results);
 
     if (results.length > 0) {
-      res.status(200).send({ message: "Uspješan login!", korisnik: results[0] });
+      const agencija = results[0]; // Dohvati podatke agencije
+      // Generiraj JWT za agenciju
+      const token = jwt.sign(
+        { sifraAgencije: agencija.Sifra_agencije, email: agencija.Email_agencije, tip: 'agencija' }, // Dodajte 'tip' ako želite razlikovati korisnike i agencije
+        process.env.JWT_SECRET_KEY, // Koristi isti tajni ključ
+        { expiresIn: '1h' } // Token ističe za 1 sat
+      );
+      res.status(200).send({ message: "Uspješan login!", korisnik: agencija, token: token }); // Pošalji token u odgovoru
     } else {
       res.status(401).send("Neispravan email ili lozinka.");
     }
@@ -185,7 +190,6 @@ app.post("/api/login_agencija", async (req, res) => {
   }
 });
 
-// Registracija korisnika
 app.post("/api/registracija_korisnika", async (req, res) => {
   try {
     const { ime, prezime, email, telefon, lozinka } = req.body;
@@ -200,7 +204,6 @@ app.post("/api/registracija_korisnika", async (req, res) => {
   }
 });
 
-// Kontakt poruka
 app.post("/api/kontaktiraj", async (req, res) => {
   try {
     const { ime, email, telefon, poruka, agencija } = req.body;
@@ -214,59 +217,70 @@ app.post("/api/kontaktiraj", async (req, res) => {
   }
 });
 
-// Dodavanje favorita
-app.post("/api/dodaj_favorit", async (req, res) => {
+// Apply the authentication middleware to the dodaj_favorit route
+app.post("/api/dodaj_favorit", auth, async (req, res) => { // Added 'auth' middleware here
   try {
-    const { Sifra_korisnika, Adresa_nekretnine, Kvadratura_nekretnine, Broj_soba, Broj_kupaonica, Cijena_nekretnine, Opis_nekretnine, Tip_nekretnine, Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije,Tip_nekretnine_2 } = req.body;
+    // req.user will contain the decoded token payload (sifraKorisnika, email)
+    // You might want to use req.user.sifraKorisnika here instead of relying on client-provided Sifra_korisnika
+    // to ensure the user adding the favorite is the one logged in.
+    const Sifra_korisnika_from_token = req.user.sifraKorisnika; 
+
+    const { Adresa_nekretnine, Kvadratura_nekretnine, Broj_soba, Broj_kupaonica, Cijena_nekretnine, Opis_nekretnine, Tip_nekretnine, Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije,Tip_nekretnine_2 } = req.body;
+    
+    // Use Sifra_korisnika_from_token instead of req.body.Sifra_korisnika for security
     const query =
       "INSERT INTO Favoriti (Sifra_korisnika, Adresa_nekretnine, Kvadratura_nekretnine, Broj_soba, Broj_kupaonica, Cijena_nekretnine, Opis_nekretnine, Tip_nekretnine, Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije, Tip_nekretnine_2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-    const values = [Sifra_korisnika, Adresa_nekretnine, Kvadratura_nekretnine, Broj_soba, Broj_kupaonica, Cijena_nekretnine, Opis_nekretnine, Tip_nekretnine, Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije,Tip_nekretnine_2];
+    const values = [Sifra_korisnika_from_token, Adresa_nekretnine, Kvadratura_nekretnine, Broj_soba, Broj_kupaonica, Cijena_nekretnine, Opis_nekretnine, Tip_nekretnine, Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije,Tip_nekretnine_2];
+    
     const results = await executeQuery(query, values);
     res.json(results);
   } catch (error) {
+    console.error("Greška prilikom dodavanja favorita:", error);
     res.status(500).send("Greška prilikom dodavanja favorita.");
   }
 });
 
-// Provjera favorita
-app.post("/api/provjeri_favorit", async (req, res) => {
+// Apply the authentication middleware to the provjeri_favorit route as well
+app.post("/api/provjeri_favorit", auth, async (req, res) => { // Added 'auth' middleware here
   try {
-    const { Sifra_korisnika, Adresa_nekretnine } = req.body;
+    const Sifra_korisnika_from_token = req.user.sifraKorisnika;
+    const { Adresa_nekretnine } = req.body;
     const query = "SELECT * FROM Favoriti WHERE Sifra_korisnika = ? AND Adresa_nekretnine = ?";
-    const results = await executeQuery(query, [Sifra_korisnika, Adresa_nekretnine]);
+    const results = await executeQuery(query, [Sifra_korisnika_from_token, Adresa_nekretnine]);
     res.json({ exists: results.length > 0 });
   } catch (error) {
+    console.error("Greška prilikom provjere favorita:", error); // Added logging
     res.status(500).send("Došlo je do greške prilikom provjere favorita.");
   }
 });
 
-// Dohvaćanje favorita
-app.get("/api/favoriti", async (req, res) => {
+// Apply the authentication middleware to the favoriti route
+app.get("/api/favoriti", auth, async (req, res) => { // Added 'auth' middleware here
   try {
-    const sifraKorisnika = req.query.sifraKorisnika;
-    if (!sifraKorisnika) {
-      return res.status(400).send("Sifra_korisnika je obavezna.");
-    }
-
+    // Use sifraKorisnika from the token, not from req.query
+    const sifraKorisnika = req.user.sifraKorisnika; 
+    
     const results = await executeQuery("SELECT * FROM Favoriti WHERE Sifra_korisnika = ?", [sifraKorisnika]);
     res.json(results);
   } catch (error) {
+    console.error("Greška prilikom dohvaćanja favorita:", error); // Added logging
     res.status(500).send("Greška prilikom dohvaćanja favorita.");
   }
 });
 
-// Brisanje favorita
-app.post("/api/izbrisi_favorit", async (req, res) => {
+// Apply the authentication middleware to the izbrisi_favorit route
+app.post("/api/izbrisi_favorit", auth, async (req, res) => { // Added 'auth' middleware here
   try {
-    const { Sifra_korisnika, Adresa_nekretnine } = req.body;
+    const Sifra_korisnika_from_token = req.user.sifraKorisnika;
+    const { Adresa_nekretnine } = req.body;
 
-    if (!Sifra_korisnika || !Adresa_nekretnine) {
+    if (!Sifra_korisnika_from_token || !Adresa_nekretnine) {
       return res.status(400).send("Sifra korisnika i adresa nekretnine su obavezni.");
     }
 
     const result = await executeQuery(
       "DELETE FROM Favoriti WHERE Sifra_korisnika = ? AND Adresa_nekretnine = ?",
-      [Sifra_korisnika, Adresa_nekretnine]
+      [Sifra_korisnika_from_token, Adresa_nekretnine]
     );
 
     if (result.affectedRows > 0) {
@@ -275,17 +289,24 @@ app.post("/api/izbrisi_favorit", async (req, res) => {
       return res.status(404).send("Nekretnina nije pronađena u favoritima.");
     }
   } catch (error) {
+    console.error("Greška prilikom brisanja iz favorita:", error); // Added logging
     res.status(500).send("Greška prilikom brisanja iz favorita.");
   }
 });
 
-// Dohvaćanje nekretnina za agenciju (uključuje i kupnju i najam)
-app.get("/api/nekretnine_agencija", async (req, res) => {
+app.get("/api/nekretnine_agencija", auth, async (req, res) => { // Dodan 'auth' middleware
   try {
-    const Email_agencije = req.query.Email_agencije;
+    // PREPORUKA: NE KORISTITI req.query.Email_agencije jer se može manipulirati.
+    // const Email_agencije = req.query.Email_agencije; // Ovu liniju sada IGNORIRATE
+
+    // EMAIL AGENCIJE SE DOHVAĆA IZ JWT PAYLOAD-a
+    // 'req.user' je objekt koji je 'auth' middleware dodao, a sadrži dekodirani payload tokena.
+    const Email_agencije = req.user.email; // Sigurno dohvatiti email iz tokena
 
     if (!Email_agencije) {
-      return res.status(400).send("Email_agencije je obavezan.");
+      // Ova provjera je sigurnosna mjera, iako ako je token validan i dobro generiran,
+      // email bi uvijek trebao biti prisutan.
+      return res.status(400).send("Email agencije nije pronađen u autorizacijskom tokenu.");
     }
 
     const query = `
@@ -297,14 +318,21 @@ app.get("/api/nekretnine_agencija", async (req, res) => {
     const results = await executeQuery(query, [Email_agencije, Email_agencije]);
     res.json(results);
   } catch (error) {
-    console.error("Greška pri dohvaćanju nekretnina:", error);
-    res.status(500).send("Došlo je do pogreške prilikom dohvaćanja nekretnina.");
+    console.error("Greška pri dohvaćanju nekretnina agencije:", error);
+    res.status(500).send("Došlo je do pogreške prilikom dohvaćanja nekretnina agencije.");
   }
 });
 
-app.put("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
+// AŽURIRANJE NEKRETNINE - SADA ZAŠTIĆENO TOKENOM
+app.put("/api/nekretnine/:sifra_nekretnine", auth, async (req, res) => { // DODANO: auth middleware
   try {
-    const sifra_nekretnine = Number(req.params.sifra_nekretnine); // Convert to Number
+    // Dohvaća email agencije iz tokena za autorizaciju
+    const Email_agencije_from_token = req.user.email;
+    if (!Email_agencije_from_token) {
+        return res.status(403).send("Niste ovlašteni za ažuriranje nekretnina.");
+    }
+
+    const sifra_nekretnine = Number(req.params.sifra_nekretnine);
     const {
       Tip_nekretnine,
       Adresa_nekretnine,
@@ -313,6 +341,7 @@ app.put("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
       Broj_kupaonica,
       Kvadratura_nekretnine,
       Cijena_nekretnine,
+      // Nema potrebe za Email_agencije u req.body, koristimo iz tokena
     } = req.body;
 
     let tableName;
@@ -322,6 +351,14 @@ app.put("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
       tableName = "Nekretnina_najam";
     } else {
       return res.status(400).send("Nevažeći Tip_nekretnine je pružen. Nije moguće odrediti ciljnu tablicu.");
+    }
+
+    // Dodatna provjera: Provjeri pripada li nekretnina agenciji koja je prijavljena
+    const checkOwnershipQuery = `SELECT Email_agencije FROM ${tableName} WHERE Sifra_nekretnine = ?`;
+    const ownershipResults = await executeQuery(checkOwnershipQuery, [sifra_nekretnine]);
+
+    if (ownershipResults.length === 0 || ownershipResults[0].Email_agencije !== Email_agencije_from_token) {
+        return res.status(403).send("Niste ovlašteni ažurirati ovu nekretninu.");
     }
 
     const query = `
@@ -334,7 +371,7 @@ app.put("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
         Broj_kupaonica = ?,
         Kvadratura_nekretnine = ?,
         Cijena_nekretnine = ?
-      WHERE Sifra_nekretnine = ?
+      WHERE Sifra_nekretnine = ? AND Email_agencije = ? -- Dodana provjera Email_agencije za sigurnost
     `;
 
     const params = [
@@ -346,6 +383,7 @@ app.put("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
       Kvadratura_nekretnine,
       Cijena_nekretnine,
       sifra_nekretnine,
+      Email_agencije_from_token // Koristimo email iz tokena
     ];
 
     const results = await executeQuery(query, params);
@@ -361,12 +399,19 @@ app.put("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
   }
 });
 
-app.post("/api/dodaj_nekretninu", upload.fields([
+// DODAVANJE NEKRETNINE - SADA ZAŠTIĆENO TOKENOM
+app.post("/api/dodaj_nekretninu", auth, upload.fields([ // DODANO: auth middleware
   { name: 'Slika_nekretnine', maxCount: 1 },
   { name: 'Slika_nekretnine_2', maxCount: 1 },
   { name: 'Slika_nekretnine_3', maxCount: 1 }
 ]), async (req, res) => {
   try {
+    // Email_agencije se dohvaća iz JWT tokena (req.user.email)
+    const Email_agencije_from_token = req.user.email; // Dohvaća email agencije iz dekodiranog tokena
+    if (!Email_agencije_from_token) {
+        return res.status(403).send("Niste ovlašteni za dodavanje nekretnina.");
+    }
+
     const {
       Tip_nekretnine,
       Adresa_nekretnine,
@@ -375,10 +420,10 @@ app.post("/api/dodaj_nekretninu", upload.fields([
       Broj_kupaonica,
       Kvadratura_nekretnine,
       Cijena_nekretnine,
-      Email_agencije
+      // Nema potrebe za Email_agencije u req.body, koristimo iz tokena
     } = req.body;
 
-    let Tip_nekretnine_2 = ''; // This will store 'stanovi', 'kuce', 'najam_stanovi', 'najam_kuce' for DB
+    let Tip_nekretnine_2 = '';
     let tableName = '';
 
     if (Tip_nekretnine === "Stan") {
@@ -397,11 +442,8 @@ app.post("/api/dodaj_nekretninu", upload.fields([
         return res.status(400).send("Nevažeći Tip_nekretnine je pružen. Nije moguće dodati nekretninu.");
     }
 
-    // Generirajte jedinstvenu Sifra_nekretnine kao BIGINT
-    // Koristite cijeli timestamp kao string, jer MySQL će ga automatski konvertirati u BIGINT.
     const Sifra_nekretnine = Date.now().toString() + Math.floor(Math.random() * 1000).toString(); 
 
-    // Multer je već spremio datoteke s originalnim imenom, samo dohvaćamo ta imena
     const Slika_nekretnine = req.files['Slika_nekretnine'] ? req.files['Slika_nekretnine'][0].originalname : null;
     const Slika_nekretnine_2 = req.files['Slika_nekretnine_2'] ? req.files['Slika_nekretnine_2'][0].originalname : null;
     const Slika_nekretnine_3 = req.files['Slika_nekretnine_3'] ? req.files['Slika_nekretnine_3'][0].originalname : null;
@@ -417,7 +459,7 @@ app.post("/api/dodaj_nekretninu", upload.fields([
     const values = [
       Sifra_nekretnine, Tip_nekretnine, Adresa_nekretnine, Opis_nekretnine,
       Broj_soba, Broj_kupaonica, Kvadratura_nekretnine, Cijena_nekretnine,
-      Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije, Tip_nekretnine_2
+      Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3, Email_agencije_from_token, Tip_nekretnine_2 // Koristimo email iz tokena
     ];
 
     const results = await executeQuery(query, values);
@@ -434,59 +476,61 @@ app.post("/api/dodaj_nekretninu", upload.fields([
 });
 
 
-app.delete("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
+// BRISANJE NEKRETNINE - SADA ZAŠTIĆENO TOKENOM
+app.delete("/api/nekretnine/:sifra_nekretnine", auth, async (req, res) => { // DODANO: auth middleware
   try {
-    // Konvertirajte sifra_nekretnine u Number, jer se iz URL-a dobiva kao string
-    const sifra_nekretnine = Number(req.params.sifra_nekretnine); 
-    const { Tip_nekretnine } = req.body; // Dohvaćamo Tip_nekretnine iz tijela zahtjeva
+    // Dohvaća email agencije iz tokena za autorizaciju
+    const Email_agencije_from_token = req.user.email;
+    if (!Email_agencije_from_token) {
+        return res.status(403).send("Niste ovlašteni za brisanje nekretnina.");
+    }
 
-    // LOGIRANJE: Provjerite što je primljeno
+    const sifra_nekretnine = Number(req.params.sifra_nekretnine);
+    const { Tip_nekretnine } = req.body; // Tip_nekretnine je još uvijek potreban za određivanje tablice/foldera
+
     console.log("--- DELETE request received ---");
     console.log("Sifra_nekretnine (iz URL-a):", sifra_nekretnine, typeof sifra_nekretnine);
     console.log("Tip_nekretnine (iz tijela zahtjeva):", Tip_nekretnine, typeof Tip_nekretnine);
 
     let tableName;
-    let typeFolder = ''; // Za brisanje slika s diska, koristimo main category folder
+    let typeFolder = '';
     if (Tip_nekretnine === "Stan" || Tip_nekretnine === "Kuća") {
         tableName = "Nekretnina_kupnja";
-        typeFolder = "kupnja"; // Changed to main category folder
+        typeFolder = "kupnja";
     } else if (Tip_nekretnine === "Najam stana" || Tip_nekretnine === "Najam kuće") {
         tableName = "Nekretnina_najam";
-        typeFolder = "najam"; // Changed to main category folder
+        typeFolder = "najam";
     } else {
-        // LOGIRANJE: Prijavite ako Tip_nekretnine nije validan
         console.error("Greška: Nevažeći Tip_nekretnine je primljen. Nije moguće odrediti ciljnu tablicu za brisanje:", Tip_nekretnine);
         return res.status(400).send("Nevažeći Tip_nekretnine je pružen. Nije moguće odrediti ciljnu tablicu za brisanje.");
     }
 
-    // LOGIRANJE: Potvrdite određenu tablicu
     console.log("Određena tablica za brisanje:", tableName);
     console.log("Određena mapa za brisanje slika:", typeFolder);
 
-    // Prvo, dohvatite imena datoteka slika iz baze prije brisanja zapisa
-    const selectQuery = `SELECT Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3 FROM ${tableName} WHERE Sifra_nekretnine = ?`;
-    const imageResults = await executeQuery(selectQuery, [sifra_nekretnine]);
+    // Provjera vlasništva prije brisanja
+    const checkOwnershipQuery = `SELECT Email_agencije, Slika_nekretnine, Slika_nekretnine_2, Slika_nekretnine_3 FROM ${tableName} WHERE Sifra_nekretnine = ?`;
+    const imageResults = await executeQuery(checkOwnershipQuery, [sifra_nekretnine]);
     
-    // LOGIRANJE: Provjerite rezultate dohvaćanja slika
-    console.log("Rezultati dohvaćanja slika iz baze:", imageResults);
+    if (imageResults.length === 0 || imageResults[0].Email_agencije !== Email_agencije_from_token) {
+        return res.status(403).send("Niste ovlašteni obrisati ovu nekretninu.");
+    }
+    
+    console.log("Rezultati dohvaćanja slika iz baze (i vlasništva):", imageResults);
 
-    // Izbrišite zapis iz baze podataka
-    const deleteQuery = `DELETE FROM ${tableName} WHERE Sifra_nekretnine = ?`;
-    const results = await executeQuery(deleteQuery, [sifra_nekretnine]);
+    const deleteQuery = `DELETE FROM ${tableName} WHERE Sifra_nekretnine = ? AND Email_agencije = ?`; // Dodana provjera Email_agencije za sigurnost
+    const results = await executeQuery(deleteQuery, [sifra_nekretnine, Email_agencije_from_token]); // Koristimo email iz tokena
     
-    // LOGIRANJE: Provjerite rezultat brisanja iz baze
     console.log("Rezultati brisanja iz baze (affectedRows):", results.affectedRows);
 
     if (results.affectedRows > 0) {
-      // Ako je zapis uspješno obrisan iz baze, obrišite i fizičke datoteke slika
       if (imageResults.length > 0) {
         const imagesToDelete = [
           imageResults[0].Slika_nekretnine,
           imageResults[0].Slika_nekretnine_2,
           imageResults[0].Slika_nekretnine_3
-        ].filter(Boolean); // Filtriraj null vrijednosti
+        ].filter(Boolean);
 
-        // LOGIRANJE: Popis slika za brisanje
         console.log("Slike za brisanje s diska:", imagesToDelete);
 
         imagesToDelete.forEach(imageName => {
@@ -503,7 +547,6 @@ app.delete("/api/nekretnine/:sifra_nekretnine", async (req, res) => {
 
       res.json({ success: true, message: "Nekretnina uspješno obrisana." });
     } else {
-      // LOGIRANJE: Ako nekretnina nije pronađena
       console.log("Nekretnina nije pronađena u tablici:", tableName, "sa Sifra_nekretnine:", sifra_nekretnine);
       res.status(404).send("Nekretnina nije pronađena.");
     }
